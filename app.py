@@ -61,6 +61,8 @@ def run_deepseek_inference(image_path: str):
     """
     Uses the correct .infer() method from DeepSeek-OCR's custom code.
     """
+    logger.info(f"📂 Reading image file: {image_path}")
+
     # Safety check for the method existence
     if not hasattr(model, 'infer'):
         # Fallback for models that might use standard generation (rare for this specific repo)
@@ -71,51 +73,90 @@ def run_deepseek_inference(image_path: str):
 
     # Setup temp path for the model to write its sidecar file
     temp_dir = os.path.dirname(image_path)
+    expected_md_file = os.path.splitext(image_path)[0] + ".md"
 
-    # model.infer() writes to disk. We let it write, then read the file back.
     # model.infer() writes to disk. We let it write, then read the file back.
     # But with crop_mode=False, it might not write to file.
     # So we try model.chat first if crop_mode is False.
     
-    try:
-        # Try using chat method first as it returns text directly
-        if hasattr(model, "chat"):
-            import io
-            import contextlib
-            f = io.StringIO()
-            with contextlib.redirect_stdout(f), contextlib.redirect_stderr(f):
-                model.chat(
-                    tokenizer=tokenizer,
-                    image=Image.open(image_path).convert("RGB"),
-                    prompt="Convert this page to markdown."
-                )
-            output = f.getvalue()
-            logger.info(f"DEBUG: Captured output length: {len(output)}")
-            if output:
-                logger.info(f"DEBUG: Captured output preview: {output[:100]}")
-                return output
+    # Attempt 1: Try model.chat (Standard HF API)
+    if hasattr(model, "chat"):
+        try:
+            logger.info("🤖 Attempting model.chat()...")
+            # model.chat usually returns the generated text directly
+            response = model.chat(
+                tokenizer=tokenizer,
+                image=Image.open(image_path).convert("RGB"),
+                prompt="Convert this page to markdown."
+            )
+            
+            # Check if response is valid text
+            if response and isinstance(response, str):
+                logger.info(f"✅ model.chat returned {len(response)} characters.")
+                logger.info(f"💾 Writing output to: {expected_md_file}")
+                with open(expected_md_file, "w", encoding="utf-8") as f_out:
+                    f_out.write(response)
+                return response
             else:
-                logger.warning("model.chat returned empty output.")
+                logger.warning(f"model.chat returned unexpected type: {type(response)}")
+                
+        except Exception as e:
+            logger.warning(f"model.chat failed: {e}. Falling back to model.infer")
+
+    # Attempt 2: Try model.infer (Custom DeepSeek API)
+    logger.info("🤖 Attempting model.infer()...")
+    try:
+        import io
+        import contextlib
+        
+        # Capture stdout because model.infer prints the result instead of returning it
+        f_capture = io.StringIO()
+        with contextlib.redirect_stdout(f_capture):
+            model.infer(
+                tokenizer=tokenizer,
+                prompt="Convert this page to markdown.",
+                image_file=image_path,
+                output_path=temp_dir,
+                base_size=1024,
+                image_size=1024,
+                crop_mode=False,  # Disable Gundam mode to avoid CUBLAS errors
+                save_results=True  # Required to generate the file (though it seems to fail, we capture stdout)
+            )
+        
+        captured_output = f_capture.getvalue()
+        
+        # Filter out known noise logs if necessary, or just save everything.
+        # The logs show some headers like "BASE: ...", "NO PATCHES", "=====". 
+        # We might want to keep it simple for now and just save it.
+        
+        if captured_output:
+            logger.info(f"✅ Captured {len(captured_output)} chars from stdout.")
+            
+            # Clean up the output (remove the "=====" and "BASE:" debug info if possible)
+            # Simple heuristic: The actual content usually starts after the last "====="
+            if "=====" in captured_output:
+                # Find the last occurrence of "=====" and take everything after it
+                clean_content = captured_output.split("=====")[-1].strip()
+            else:
+                clean_content = captured_output
+            
+            logger.info(f"💾 Writing captured content to: {expected_md_file}")
+            with open(expected_md_file, "w", encoding="utf-8") as f_out:
+                f_out.write(clean_content)
+            return clean_content
+        else:
+            logger.warning("⚠️ model.infer produced no stdout output.")
+            
     except Exception as e:
-        logger.warning(f"model.chat failed: {e}. Falling back to model.infer")
+        logger.error(f"❌ model.infer failed: {e}")
 
-    model.infer(
-        tokenizer=tokenizer,
-        prompt="Convert this page to markdown.",
-        image_file=image_path,
-        output_path=temp_dir,
-        base_size=1024,
-        image_size=1024,
-        crop_mode=False,  # Disable Gundam mode to avoid CUBLAS errors
-        save_results=True  # Required to generate the file
-    )
-
-    # Read the generated file back
-    expected_md_file = os.path.splitext(image_path)[0] + ".md"
+    # Final Check: Did the file get created?
     if os.path.exists(expected_md_file):
+        logger.info(f"✅ Verified generated file exists at: {expected_md_file}")
         with open(expected_md_file, "r", encoding="utf-8") as f:
             return f.read()
     else:
+        logger.error(f"❌ Failed to generate file at: {expected_md_file}")
         return "Error: Markdown file was not generated by model."
 
 
