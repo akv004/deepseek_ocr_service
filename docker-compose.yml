@@ -14,13 +14,12 @@ services:
     environment:
       - HF_HOME=/root/.cache/huggingface
       - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
-      - HUGGINGFACE_HUB_TOKEN
     volumes:
-      # Cache: Share your existing Host HuggingFace cache to save download time
-      - /home/amit/projects/.cache/huggingface:/root/.cache/huggingface
-
-      # Input: Use local capture folder
       - ./capture:/app/capture
 
+      # Map your local app.py to the container for live editing
+      - ./app.py:/app/app.py
+
     restart: unless-stopped
-    command: [ "uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8004" ]
+    # Use reload flag so you don't even need to restart container for small changes
+    command: [ "uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8004", "--reload" ]

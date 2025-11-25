@@ -16,17 +16,18 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
+# Set path and library path
+ENV PATH="/opt/deepseek-ocr/bin:$PATH"
+ENV LD_LIBRARY_PATH="/opt/deepseek-ocr/lib:$LD_LIBRARY_PATH"
+
 # Copy and unpack the pre-built environment from the host
 # Since Host and Container are both Ubuntu 24.04, this works perfectly!
 COPY deepseek_env.tar.gz /app/deepseek_env.tar.gz
 RUN mkdir -p /opt/deepseek-ocr && \
     tar -xzf deepseek_env.tar.gz -C /opt/deepseek-ocr && \
     rm deepseek_env.tar.gz && \
-    /opt/deepseek-ocr/bin/python /opt/deepseek-ocr/bin/conda-unpack
-
-# Set path and library path
-ENV PATH="/opt/deepseek-ocr/bin:$PATH"
-ENV LD_LIBRARY_PATH="/opt/deepseek-ocr/lib:$LD_LIBRARY_PATH"
+    conda-unpack && \
+    pip install transformers==4.46.3 accelerate tokenizers matplotlib
 
 # Copy Application Code
 COPY app.py .

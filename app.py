@@ -2,125 +2,176 @@ import os
 import glob
 import torch
 import logging
-from fastapi import FastAPI, HTTPException, Request
+import sys
+import shutil
+from fastapi import FastAPI, HTTPException, BackgroundTasks
 from pydantic import BaseModel
 from transformers import AutoModel, AutoTokenizer
 from PIL import Image
-import io
-import time
 
-# --- Logging Configuration ---
+# --- LOGGING SETUP ---
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
-    handlers=[
-        logging.StreamHandler()
-    ]
+    handlers=[logging.StreamHandler(sys.stdout)]
 )
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("DeepSeek-OCR")
 
 app = FastAPI(title="DeepSeek-OCR Service")
 
-# --- Configuration ---
-MODEL_NAME = "deepseek-ai/DeepSeek-OCR"  # Will download on first run
+# --- CONFIG ---
+# Ensure this matches the HuggingFace ID exactly
+MODEL_NAME = "deepseek-ai/DeepSeek-OCR"
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
-logger.info(f"Initializing DeepSeek-OCR on {DEVICE}...")
+logger.info(f"🚀 Initializing on {DEVICE}...")
 
-# --- Load Model (Global) ---
-# Note: Actual loading code depends on specific repo structure. 
-# Assuming HuggingFace AutoModel support or using the official wrapper.
-# If strictly custom, we would clone the repo in Dockerfile. 
-# Below is the standard HuggingFace pattern for DeepSeek-VL/OCR.
-
+# --- LOAD MODEL (Global) ---
 try:
-    tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME, trust_remote_code=True)
+    # We force use_fast=False to avoid Rust tokenizer issues
+    tokenizer = AutoTokenizer.from_pretrained(
+        MODEL_NAME,
+        trust_remote_code=True,
+        use_fast=False,
+    )
+
     model = AutoModel.from_pretrained(
-        MODEL_NAME, 
-        trust_remote_code=True, 
-        torch_dtype=torch.bfloat16 if DEVICE == "cuda" else torch.float32
+        MODEL_NAME,
+        trust_remote_code=True,
+        torch_dtype=torch.float32,
+        attn_implementation="eager"
     ).to(DEVICE)
     model.eval()
-    logger.info("Model loaded successfully.")
+    logger.info("✅ Model loaded successfully.")
 except Exception as e:
-    logger.error(f"Model load failed: {e}")
-    # Placeholder for build process
+    logger.critical(f"❌ FATAL: Model load failed: {e}")
     model = None
-    tokenizer = None
 
+# --- REQUEST MODELS ---
 class FolderRequest(BaseModel):
     folder_path: str
-    output_format: str = "markdown"  # markdown or text
 
-@app.middleware("http")
-async def log_requests(request: Request, call_next):
-    start_time = time.time()
-    response = await call_next(request)
-    process_time = time.time() - start_time
-    logger.info(f"Method={request.method} Path={request.url.path} Status={response.status_code} Time={process_time:.2f}s")
-    return response
 
+class ImageRequest(BaseModel):
+    image_path: str
+
+
+# --- CORE INFERENCE LOGIC ---
+def run_deepseek_inference(image_path: str):
+    """
+    Uses the correct .infer() method from DeepSeek-OCR's custom code.
+    """
+    # Safety check for the method existence
+    if not hasattr(model, 'infer'):
+        # Fallback for models that might use standard generation (rare for this specific repo)
+        logger.warning(f"Model object {type(model)} has no .infer(). Trying standard chat...")
+        if hasattr(model, 'chat'):
+            return model.chat(tokenizer, Image.open(image_path).convert('RGB'), "Convert to markdown")
+        raise RuntimeError("Model does not support .infer() or .chat().")
+
+    # Setup temp path for the model to write its sidecar file
+    temp_dir = os.path.dirname(image_path)
+
+    # model.infer() writes to disk. We let it write, then read the file back.
+    # model.infer() writes to disk. We let it write, then read the file back.
+    # But with crop_mode=False, it might not write to file.
+    # So we try model.chat first if crop_mode is False.
+    
+    try:
+        # Try using chat method first as it returns text directly
+        if hasattr(model, "chat"):
+            import io
+            import contextlib
+            f = io.StringIO()
+            with contextlib.redirect_stdout(f), contextlib.redirect_stderr(f):
+                model.chat(
+                    tokenizer=tokenizer,
+                    image=Image.open(image_path).convert("RGB"),
+                    prompt="Convert this page to markdown."
+                )
+            output = f.getvalue()
+            logger.info(f"DEBUG: Captured output length: {len(output)}")
+            if output:
+                logger.info(f"DEBUG: Captured output preview: {output[:100]}")
+                return output
+            else:
+                logger.warning("model.chat returned empty output.")
+    except Exception as e:
+        logger.warning(f"model.chat failed: {e}. Falling back to model.infer")
+
+    model.infer(
+        tokenizer=tokenizer,
+        prompt="Convert this page to markdown.",
+        image_file=image_path,
+        output_path=temp_dir,
+        base_size=1024,
+        image_size=1024,
+        crop_mode=False,  # Disable Gundam mode to avoid CUBLAS errors
+        save_results=True  # Required to generate the file
+    )
+
+    # Read the generated file back
+    expected_md_file = os.path.splitext(image_path)[0] + ".md"
+    if os.path.exists(expected_md_file):
+        with open(expected_md_file, "r", encoding="utf-8") as f:
+            return f.read()
+    else:
+        return "Error: Markdown file was not generated by model."
+
+
+# --- ENDPOINT 1: HEALTH CHECK (Fixing your 404) ---
 @app.get("/health")
 def health():
+    if model is None:
+        raise HTTPException(status_code=503, detail="Model failed to load")
     return {"status": "running", "device": DEVICE, "model": MODEL_NAME}
 
-@app.post("/scan_folder")
-async def scan_folder_api(request: FolderRequest):
-    """
-    Scans a mounted directory for images and generates .md files.
-    """
-    logger.info(f"Received scan request for folder: {request.folder_path}")
-    
-    if not os.path.exists(request.folder_path):
-        logger.error(f"Path not found: {request.folder_path}")
-        raise HTTPException(status_code=404, detail=f"Path not found: {request.folder_path}")
 
-    extensions = ['*.png', '*.jpg', '*.jpeg', '*.bmp', '*.webp']
+# --- ENDPOINT 2: IMMEDIATE RESPONSE ---
+@app.post("/read_image")
+async def read_image_api(request: ImageRequest):
+    if not os.path.exists(request.image_path):
+        raise HTTPException(status_code=404, detail=f"Image not found at {request.image_path}")
+
+    logger.info(f"📖 Reading single image: {request.image_path}")
+
+    try:
+        markdown_text = run_deepseek_inference(request.image_path)
+        return {
+            "file": request.image_path,
+            "content": markdown_text
+        }
+    except Exception as e:
+        logger.error(f"Error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# --- ENDPOINT 3: BATCH PROCESSING ---
+def process_folder_task(folder_path: str):
+    logger.info(f"📂 STARTING BATCH SCAN: {folder_path}")
+    extensions = ['*.png', '*.jpg', '*.jpeg', '*.webp']
     files = []
     for ext in extensions:
-        files.extend(glob.glob(os.path.join(request.folder_path, ext)))
-    
-    logger.info(f"Found {len(files)} images to process.")
-
-    results = []
+        files.extend(glob.glob(os.path.join(folder_path, ext)))
 
     for img_path in files:
         try:
-            # Check if output already exists to skip
             out_path = os.path.splitext(img_path)[0] + ".md"
-            if os.path.exists(out_path):
-                logger.info(f"Skipping {img_path} (already processed)")
-                results.append({"file": img_path, "status": "skipped"})
-                continue
+            if os.path.exists(out_path): continue
 
-            logger.info(f"Processing {img_path}...")
-            
-            # --- Inference Logic ---
-            # This is the "Context Optical Compression" usage
-            # 2. Generate using model.infer
-            # model.infer(tokenizer, prompt, image_file, output_path, save_results=True)
-            # It saves the result directly to the output_path (which is a directory)
-            
-            model.infer(
-                tokenizer=tokenizer,
-                prompt="Convert this page to markdown.",
-                image_file=img_path,
-                output_path=request.folder_path, # Save in the same folder
-                save_results=True
-            )
-            
-            # Since model.infer returns None and saves to file, we verify the file exists
-            if os.path.exists(out_path):
-                logger.info(f"Successfully generated {out_path}")
-                results.append({"file": img_path, "status": "processed"})
-            else:
-                logger.warning(f"Output file not found for {img_path}")
-                results.append({"file": img_path, "status": "processed_but_file_missing"})
-            
+            logger.info(f"Processing: {os.path.basename(img_path)}")
+            run_deepseek_inference(img_path)
+
         except Exception as e:
-            logger.error(f"Error processing {img_path}: {e}")
-            results.append({"file": img_path, "status": "error", "error": str(e)})
+            logger.error(f"Failed on {img_path}: {e}")
 
-    summary = {"total_processed": len(results), "details": results}
-    logger.info(f"Scan complete. Summary: {summary}")
-    return summary
+    logger.info("🏁 Batch scan complete.")
+
+
+@app.post("/scan_folder")
+async def scan_folder_api(request: FolderRequest, background_tasks: BackgroundTasks):
+    if not os.path.exists(request.folder_path):
+        raise HTTPException(status_code=404, detail="Folder not found")
+
+    background_tasks.add_task(process_folder_task, request.folder_path)
+    return {"status": "Job Queued", "mode": "batch_save_to_disk"}

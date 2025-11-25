@@ -41,6 +41,22 @@ The service uses a **multi-stage Docker build** to create the environment and co
     - Health Check: `http://localhost:8004/health`
     - Docs: `http://localhost:8004/docs`
 
+## How to Work with This Service
+
+After the first build, you can start the service in detached mode:
+```bash
+docker compose up -d
+```
+*No `--build` flag is needed after the initial build.*
+
+To stop the service, run:
+```bash
+docker compose down
+```
+This will gracefully shut down and remove the running containers.
+
+To make changes to the API, simply edit `app.py` locally. The container runs `uvicorn` with the `--reload` flag, so any changes to `app.py` will be detected and the API will restart automatically inside the container. This provides zero wait time for code updates—no need to rebuild or restart the container manually.
+
 ## Testing
 
 You can test the service using `curl` or any API client (like Postman).
@@ -86,3 +102,8 @@ curl -X POST "http://localhost:8004/scan_folder" \
 
 - **Flash Attention**: If you see warnings about flash attention, ensure you are using the packed environment (`deepseek_env.tar.gz` exists in the directory).
 - **Permissions**: If you encounter permission issues with the cache, ensure your user ID matches the container (default root, but volume mapping usually handles this).
+
+
+
+
+docker compose restart deepseek-ocr

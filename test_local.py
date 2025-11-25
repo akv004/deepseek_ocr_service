@@ -21,7 +21,8 @@ def test_model():
         model = AutoModel.from_pretrained(
             model_path, 
             trust_remote_code=True, 
-            torch_dtype=torch.bfloat16
+            torch_dtype=torch.float32,
+            attn_implementation="eager"
         ).cuda().eval()
         
         print("SUCCESS: Model loaded successfully on GPU!")

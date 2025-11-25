@@ -5,25 +5,29 @@ channels:
   - conda-forge
   - defaults
 dependencies:
-  - python=3.12
+  - python=3.10
   - pip
   - git
   - numpy<2
-  - ninja       # Required to compile flash-attn
-  - packaging   # Required to compile flash-attn
+  - ninja
+  - packaging
   - pip:
-      # We install torch via standard pip (defaults to CUDA 12.4 which is good for 5090)
+      # Hardware Support (RTX 5090)
       - torch>=2.5.1
       - torchvision>=0.20.1
-      - transformers==4.46.3
-      - tokenizers==0.20.3
+
+      # DeepSeek Compatibility (Prevents the crash)
+      - transformers==4.38.2
+      - accelerate==0.27.2
+      - tokenizers==0.15.2
+
+      # Utilities
       - timm
       - einops
       - addict
       - easydict
       - pillow
       - opencv-python-headless
-      - accelerate
       - fastapi
       - uvicorn
       - python-multipart

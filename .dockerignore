@@ -1,0 +1,6 @@
+capture/
+.git
+.idea
+__pycache__
+*.md
+# Do NOT ignore deepseek_env.tar.gz, as the Dockerfile needs it.
