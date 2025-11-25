@@ -1,0 +1,25 @@
+# 1. Create the environment from the fixed YAML (DONE)
+# conda env create -f deepseek_ocr_env.yml
+
+# 2. Activate the environment
+# conda activate deepseek-ocr
+
+# 3. Install Flash Attention manually with the flag (DONE)
+# WHY: The standard pip install might fail or not be optimized for the RTX 5090 (Blackwell).
+# We cloned the flash-attention repo to manually compile it with `--no-build-isolation` to ensure compatibility.
+# The source folder `flash-attention` was used for this compilation but is not needed for runtime if the env is packed.
+# Command used:
+# pip install flash-attn==2.7.3 --no-build-isolation
+
+# 4. Verify torch sees your GPU (DONE)
+# python -c "import torch; print(f'CUDA: {torch.cuda.is_available()}, GPU: {torch.cuda.get_device_name(0)}')"
+
+# 5. Pack the environment (ready for Docker) (DONE)
+# WHY: Docker needs a portable environment. We pack the conda env (with our manual flash-attn build) into a tarball.
+# This allows the Docker container to simply unpack it and run, skipping complex build steps inside the container.
+#
+# HOW TO RECREATE deepseek_env.tar.gz:
+# 1. Ensure environment is active: conda activate deepseek-ocr
+# 2. Install conda-pack if missing: conda install -c conda-forge conda-pack -y
+# 3. Run pack command:
+# conda-pack -n deepseek-ocr -o deepseek_env.tar.gz --ignore-missing-files

@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+.env
+.DS_Store
+capture/
+*.tar.gz
+hf_cache/
+test_output/
+test_image.jpg
+.ipynb_checkpoints/

@@ -1,0 +1,12 @@
+torch>=2.4.0
+torchvision
+transformers>=4.38.0
+accelerate
+timm
+einops
+fastapi
+uvicorn
+python-multipart
+opencv-python-headless
+pillow
+numpy
