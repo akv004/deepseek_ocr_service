@@ -4,7 +4,7 @@ import torch
 import logging
 import sys
 import shutil
-from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi import FastAPI, HTTPException, BackgroundTasks, File, UploadFile
 from pydantic import BaseModel
 from transformers import AutoModel, AutoTokenizer
 from PIL import Image
@@ -184,7 +184,35 @@ async def read_image_api(request: ImageRequest):
         }
     except Exception as e:
         logger.error(f"Error: {e}")
+
+# --- ENDPOINT 4: DIRECT FILE UPLOAD ---
+@app.post("/process_image")
+async def process_image_endpoint(file: UploadFile = File(...)):
+    temp_filename = f"temp_{file.filename}"
+    try:
+        with open(temp_filename, "wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
+            
+        logger.info(f"Received image via POST: {temp_filename}")
+        abs_temp_filename = os.path.abspath(temp_filename)
+        markdown_text = run_deepseek_inference(abs_temp_filename)
+        
+        return {
+            "filename": file.filename,
+            "content": markdown_text
+        }
+    except Exception as e:
+        logger.error(f"Error processing uploaded image: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        # Clean up temp file
+        if os.path.exists(temp_filename):
+            os.remove(temp_filename)
+        # Clean up generated md file if it exists
+        expected_md = os.path.splitext(temp_filename)[0] + ".md"
+        if os.path.exists(expected_md):
+            os.remove(expected_md)
+
 
 
 # --- ENDPOINT 3: BATCH PROCESSING ---
